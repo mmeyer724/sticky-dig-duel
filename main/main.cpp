@@ -4,6 +4,7 @@
 // tasks and post events here; the loop applies them, ticks the game and
 // refreshes the e-paper panel when the game asks for it.
 
+#include <cstdio>
 #include <cstring>
 
 #include "board.h"
@@ -141,6 +142,52 @@ void check(esp_err_t err, const char *what)
     }
 }
 
+// Diagnostic screen toggled with the Down button: what the touch controller
+// reports, with a crosshair where the last touch landed.
+void draw_touch_test(Canvas &c, const TouchStatus &t)
+{
+    constexpr Color B = Color::Black;
+    c.clear(Color::White);
+    c.text(64, 14, "TOUCH TEST", font_large(), B);
+    char line[96];
+    if (t.found) {
+        std::snprintf(line, sizeof(line), "Controller: GT911 at 0x%02X, %ux%u", t.address,
+                      t.sensor_w, t.sensor_h);
+    } else {
+        std::snprintf(line, sizeof(line), "Controller: not found, retrying");
+    }
+    c.text(64, 82, line, font_small(), B);
+    std::snprintf(line, sizeof(line), "Reads %lu, errors %lu, resets %lu",
+                  static_cast<unsigned long>(t.reads), static_cast<unsigned long>(t.errors),
+                  static_cast<unsigned long>(t.resets));
+    c.text(64, 110, line, font_small(), B);
+    std::snprintf(line, sizeof(line), "Touches %lu, taps %lu, ignored %lu",
+                  static_cast<unsigned long>(t.touches), static_cast<unsigned long>(t.taps),
+                  static_cast<unsigned long>(t.ignored));
+    c.text(64, 138, line, font_small(), B);
+    if (t.touches > 0) {
+        std::snprintf(line, sizeof(line), "Last: raw %d,%d  screen %d,%d", t.raw_x, t.raw_y, t.x,
+                      t.y);
+    } else {
+        std::snprintf(line, sizeof(line), "Last: no touch yet");
+    }
+    c.text(64, 166, line, font_small(), B);
+    c.text(64, 206, "Tap each square. The cross should land on it.", font_small(), B);
+    c.text(64, 234, "Press DOWN to return to the game.", font_small(), B);
+
+    const Rect targets[] = {
+        {0, 0, 44, 44}, {756, 0, 44, 44}, {0, 436, 44, 44}, {756, 436, 44, 44}, {378, 310, 44, 44},
+    };
+    for (const Rect &r : targets) {
+        c.frame(r, 3, B);
+    }
+    if (t.touches > 0) {
+        c.line(t.x - 34, t.y, t.x + 34, t.y, 3, B);
+        c.line(t.x, t.y - 34, t.x, t.y + 34, 3, B);
+        c.ring(t.x, t.y, 14, 3, B);
+    }
+}
+
 }  // namespace
 
 extern "C" void app_main()
@@ -182,6 +229,10 @@ extern "C" void app_main()
     static const char *const kPhaseNames[] = {"lobby", "bury", "play", "over"};
     Game::Phase logged_phase = game->phase();
     int partials = 0;
+    bool touch_test = false;
+    bool test_needs_full = false;
+    TouchStatus test_shown = {};
+    uint32_t test_drawn_at = 0;
     while (true) {
         Event e;
         if (xQueueReceive(s_events, &e, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -190,12 +241,22 @@ extern "C" void app_main()
                 switch (e.type) {
                 case Event::Type::Tap:
                     ESP_LOGI(kTag, "tap %d,%d", e.x, e.y);
-                    game->tap(e.x, e.y, now);
+                    if (!touch_test) {
+                        game->tap(e.x, e.y, now);
+                    }
                     break;
                 case Event::Type::Button:
                     ESP_LOGI(kTag, "button %d%s", static_cast<int>(e.button),
                              e.long_press ? " (long)" : "");
-                    game->button(e.button, e.long_press, now);
+                    if (e.button == Button::Down && !e.long_press) {
+                        touch_test = !touch_test;
+                        test_needs_full = touch_test;
+                        if (!touch_test) {
+                            game->redraw_all();
+                        }
+                    } else {
+                        game->button(e.button, e.long_press, now);
+                    }
                     break;
                 case Event::Type::Frame:
                     game->receive(e.from, e.data, e.len, e.rssi, now);
@@ -218,6 +279,23 @@ extern "C" void app_main()
             epd_show(pixels, true);
             epd_sleep();
             board_deep_sleep();
+        }
+
+        if (touch_test) {
+            // The game keeps ticking and talking to its peer but doesn't draw.
+            const TouchStatus t = touch_status();
+            const bool moved = t.touches != test_shown.touches || t.found != test_shown.found ||
+                               t.resets != test_shown.resets;
+            const bool counters = t.reads != test_shown.reads || t.errors != test_shown.errors;
+            const uint32_t since = now - test_drawn_at;
+            if (test_needs_full || (moved && since >= 300) || (counters && since >= 5000)) {
+                draw_touch_test(canvas, t);
+                check(epd_show(pixels, test_needs_full), "display");
+                test_shown = t;
+                test_needs_full = false;
+                test_drawn_at = now_ms();
+            }
+            continue;
         }
 
         const Redraw redraw = game->redraw_needed(now);

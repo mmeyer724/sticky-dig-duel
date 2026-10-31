@@ -52,6 +52,8 @@ public:
 
     Redraw redraw_needed(uint32_t now) const;
     void render(Canvas &canvas, uint32_t now);
+    // Something else used the screen; draw the game again from scratch.
+    void redraw_all() { request(Redraw::Full); }
     bool wants_sleep(uint32_t now) const;
     void render_sleep(Canvas &canvas) const;
 

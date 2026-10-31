@@ -39,7 +39,8 @@ restarts.
 | - | - |
 | AI, short press | Full redraw (clears e-paper ghosting) |
 | AI, hold 2 s | Sleep. Press AI to wake. |
-| Up / Down | Not used |
+| Down | Touch test: shows what the touch controller reports. Press again to return. |
+| Up | Not used |
 
 A Sticky sleeps by itself after 5 minutes alone in the lobby or 15 minutes
 without play.
@@ -88,7 +89,7 @@ page to GitHub Pages on every push to `main`. To turn on publishing, set
 
 ## Status
 
-Version 1.0.0 builds cleanly and passes the host simulation. It has not yet
+Version 1.0.1 builds cleanly and passes the host simulation. It has not yet
 been tested on real hardware. If something misbehaves, the serial log
 (`idf.py monitor`, 115200 baud) shows each tap, button press, game phase change
 and display refresh, plus touch, radio and display start-up errors.
