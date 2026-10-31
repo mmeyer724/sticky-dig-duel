@@ -1,7 +1,7 @@
 #include "touch.h"
 
 #include <algorithm>
-#include <initializer_list>
+#include <cstring>
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -14,10 +14,11 @@
 namespace {
 
 constexpr char kTag[] = "touch";
-constexpr uint8_t kAddrLow = 0x5D;   // INT held low during reset
-constexpr uint8_t kAddrHigh = 0x14;  // INT held high during reset
-constexpr uint16_t kRegProductId = 0x8140;
-constexpr uint16_t kRegResolution = 0x8146;
+constexpr uint8_t kAddr5D = 0x5D;  // INT low while reset is released
+constexpr uint8_t kAddr14 = 0x14;  // INT high while reset is released
+constexpr uint16_t kRegCommand = 0x8040;
+constexpr uint16_t kRegConfigVersion = 0x8047;
+constexpr uint16_t kRegProductId = 0x8140;  // id[4], firmware[2], x res[2], y res[2]
 constexpr uint16_t kRegStatus = 0x814E;
 constexpr uint16_t kRegPoints = 0x8150;
 constexpr int kTimeoutMs = 20;
@@ -25,15 +26,28 @@ constexpr TickType_t kPoll = pdMS_TO_TICKS(20);
 constexpr int kIdlePollsForRelease = 10;  // no data for 200 ms counts as lifted
 constexpr int kErrorsBeforeReset = 25;
 
+const gpio_num_t kRst = static_cast<gpio_num_t>(PIN_TOUCH_RST);
+const gpio_num_t kInt = static_cast<gpio_num_t>(PIN_TOUCH_INT);
+const gpio_num_t kEn = static_cast<gpio_num_t>(PIN_TOUCH_EN);
+
 i2c_master_bus_handle_t s_bus = nullptr;
 i2c_master_dev_handle_t s_dev = nullptr;
 TaskHandle_t s_task = nullptr;
 volatile bool s_stop = false;
+volatile int s_requested_start = -1;  // set by touch_try_next_start()
 TapHandler s_on_tap = nullptr;
 portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 TouchStatus s_status = {};
 
 enum class Read { Error, NoData, Released, Touch };
+
+struct Identity {
+    char product_id[5];
+    uint16_t firmware;
+    uint8_t config_version;
+    uint16_t w;
+    uint16_t h;
+};
 
 bool read_regs(uint16_t reg, uint8_t *out, size_t len)
 {
@@ -47,20 +61,42 @@ bool write_reg(uint16_t reg, uint8_t value)
     return i2c_master_transmit(s_dev, data, 3, kTimeoutMs) == ESP_OK;
 }
 
-// The GT911 latches its I2C address from the INT pin on the rising edge of reset.
-bool reset_at(uint8_t address)
+// GT911 datasheet power-on timing (also what the Linux goodix driver does):
+// reset low, INT selects the address, release reset, then hold INT low for
+// 50 ms ("INT sync") before letting the chip drive it.
+void datasheet_reset(uint8_t address)
 {
-    const gpio_num_t rst = static_cast<gpio_num_t>(PIN_TOUCH_RST);
-    const gpio_num_t irq = static_cast<gpio_num_t>(PIN_TOUCH_INT);
-    gpio_set_direction(irq, GPIO_MODE_OUTPUT);
-    gpio_set_level(rst, 0);
-    gpio_set_level(irq, address == kAddrHigh ? 1 : 0);
+    gpio_set_pull_mode(kRst, GPIO_FLOATING);
+    gpio_set_direction(kRst, GPIO_MODE_OUTPUT);
+    gpio_set_direction(kInt, GPIO_MODE_OUTPUT);
+    gpio_set_level(kRst, 0);
+    gpio_set_level(kInt, 0);
     vTaskDelay(pdMS_TO_TICKS(20));
-    gpio_set_level(rst, 1);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    gpio_set_direction(irq, GPIO_MODE_INPUT);
-    vTaskDelay(pdMS_TO_TICKS(80));
+    gpio_set_level(kInt, address == kAddr14 ? 1 : 0);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    gpio_set_level(kRst, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(kInt, 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    gpio_set_direction(kInt, GPIO_MODE_INPUT);
+    vTaskDelay(pdMS_TO_TICKS(60));
+}
 
+// Cut the controller's power and let it boot on its own, with reset released
+// and INT left to the board.
+void power_cycle()
+{
+    gpio_set_direction(kInt, GPIO_MODE_INPUT);
+    gpio_set_direction(kRst, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(kRst, GPIO_PULLUP_ONLY);
+    gpio_set_level(kEn, 0);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    gpio_set_level(kEn, 1);
+    vTaskDelay(pdMS_TO_TICKS(300));
+}
+
+bool attach(uint8_t address)
+{
     if (s_dev != nullptr) {
         i2c_master_bus_rm_device(s_dev);
         s_dev = nullptr;
@@ -76,32 +112,113 @@ bool reset_at(uint8_t address)
         s_dev = nullptr;
         return false;
     }
-    uint8_t id[4];
-    return read_regs(kRegProductId, id, sizeof(id));
+    return true;
 }
 
-bool detect()
+bool identify(Identity &id)
 {
-    for (int attempt = 0; attempt < 3; ++attempt) {
-        for (uint8_t address : {kAddrHigh, kAddrLow}) {
-            if (!reset_at(address)) {
-                continue;
-            }
-            uint16_t w = 0;
-            uint16_t h = 0;
-            uint8_t res[4];
-            if (read_regs(kRegResolution, res, sizeof(res))) {
-                w = static_cast<uint16_t>(res[0] | (res[1] << 8));
-                h = static_cast<uint16_t>(res[2] | (res[3] << 8));
-            }
-            write_reg(kRegStatus, 0);
-            taskENTER_CRITICAL(&s_lock);
-            s_status.found = true;
-            s_status.address = address;
-            s_status.sensor_w = w != 0 ? w : 800;
-            s_status.sensor_h = h != 0 ? h : 480;
-            taskEXIT_CRITICAL(&s_lock);
-            ESP_LOGI(kTag, "GT911 found at 0x%02X, resolution %ux%u", address, w, h);
+    uint8_t info[10];
+    if (!read_regs(kRegProductId, info, sizeof(info))) {
+        return false;
+    }
+    std::memcpy(id.product_id, info, 4);
+    id.product_id[4] = '\0';
+    for (char &ch : id.product_id) {
+        if (ch != '\0' && (ch < 0x20 || ch > 0x7E)) {
+            ch = '?';
+        }
+    }
+    id.firmware = static_cast<uint16_t>(info[4] | (info[5] << 8));
+    id.w = static_cast<uint16_t>(info[6] | (info[7] << 8));
+    id.h = static_cast<uint16_t>(info[8] | (info[9] << 8));
+    id.config_version = 0;
+    read_regs(kRegConfigVersion, &id.config_version, 1);
+    return true;
+}
+
+bool healthy(const Identity &id)
+{
+    return id.product_id[0] == '9' && id.w != 0 && id.h != 0;
+}
+
+// Brings the controller up one way; returns the address it answered on.
+bool bring_up(TouchStart how, uint8_t &address, Identity &id)
+{
+    uint8_t candidates[2] = {kAddr5D, kAddr14};
+    int count = 2;
+    switch (how) {
+    case TouchStart::ResetAt5D:
+        datasheet_reset(kAddr5D);
+        count = 1;
+        break;
+    case TouchStart::ResetAt14:
+        datasheet_reset(kAddr14);
+        candidates[0] = kAddr14;
+        count = 1;
+        break;
+    case TouchStart::PowerCycle:
+        power_cycle();
+        break;
+    }
+    for (int i = 0; i < count; ++i) {
+        const uint8_t candidate = candidates[i];
+        if (attach(candidate) && identify(id)) {
+            address = candidate;
+            ESP_LOGI(kTag, "%s: answered at 0x%02X, id '%s', firmware 0x%04X, config 0x%02X, "
+                     "resolution %ux%u", touch_start_name(how), candidate, id.product_id,
+                     id.firmware, id.config_version, id.w, id.h);
+            return true;
+        }
+    }
+    ESP_LOGW(kTag, "%s: no answer", touch_start_name(how));
+    return false;
+}
+
+void adopt(TouchStart how, uint8_t address, const Identity &id)
+{
+    write_reg(kRegCommand, 0x00);  // coordinate reporting mode
+    write_reg(kRegStatus, 0);
+    taskENTER_CRITICAL(&s_lock);
+    s_status.found = true;
+    s_status.healthy = healthy(id);
+    s_status.start = how;
+    s_status.address = address;
+    std::memcpy(s_status.product_id, id.product_id, sizeof(id.product_id));
+    s_status.firmware = id.firmware;
+    s_status.config_version = id.config_version;
+    s_status.sensor_w = id.w;
+    s_status.sensor_h = id.h;
+    taskEXIT_CRITICAL(&s_lock);
+}
+
+// Tries each start method, beginning with `first`, and keeps the first one
+// after which the chip looks healthy. If none does, falls back to the first
+// that answered at all. With `only_first`, tries just that one method.
+bool detect(int first, bool only_first)
+{
+    int fallback = -1;
+    for (int k = 0; k < (only_first ? 1 : kTouchStarts); ++k) {
+        const TouchStart how = static_cast<TouchStart>((first + k) % kTouchStarts);
+        uint8_t address = 0;
+        Identity id = {};
+        if (!bring_up(how, address, id)) {
+            continue;
+        }
+        if (healthy(id) || only_first) {
+            adopt(how, address, id);
+            return true;
+        }
+        if (fallback < 0) {
+            fallback = static_cast<int>(how);
+        }
+    }
+    if (fallback >= 0) {
+        const TouchStart how = static_cast<TouchStart>(fallback);
+        uint8_t address = 0;
+        Identity id = {};
+        if (bring_up(how, address, id)) {
+            ESP_LOGW(kTag, "no start method looked healthy; using %s", touch_start_name(how));
+            adopt(how, address, id);
             return true;
         }
     }
@@ -118,17 +235,19 @@ uint16_t scale(uint32_t value, uint32_t in_max, uint32_t out_max)
 // relative to the panel; this is the mapping Seeed's Sticky demos use.
 void to_screen(uint16_t raw_x, uint16_t raw_y, int &x, int &y)
 {
-    const uint32_t tx = static_cast<uint32_t>(raw_x) * 800 / s_status.sensor_w;
-    const uint32_t ty = static_cast<uint32_t>(raw_y) * 480 / s_status.sensor_h;
+    const uint32_t w = s_status.sensor_w != 0 ? s_status.sensor_w : 800;
+    const uint32_t h = s_status.sensor_h != 0 ? s_status.sensor_h : 480;
+    const uint32_t tx = static_cast<uint32_t>(raw_x) * 800 / w;
+    const uint32_t ty = static_cast<uint32_t>(raw_y) * 480 / h;
     const uint16_t portrait_x = scale(tx, 800, 479);
     const uint16_t portrait_y = scale(480 - std::min<uint32_t>(ty, 480), 480, 799);
     x = portrait_y;
     y = 479 - portrait_x;
 }
 
-Read read_point(int &raw_x, int &raw_y)
+Read read_point(int &raw_x, int &raw_y, uint8_t &status)
 {
-    uint8_t status = 0;
+    status = 0;
     if (!read_regs(kRegStatus, &status, 1)) {
         return Read::Error;
     }
@@ -157,8 +276,19 @@ void touch_task(void *)
     int errors_in_row = 0;
     TickType_t wake = xTaskGetTickCount();
     while (!s_stop) {
+        const int requested = s_requested_start;
+        if (requested >= 0) {
+            s_requested_start = -1;
+            taskENTER_CRITICAL(&s_lock);
+            s_status.found = false;
+            ++s_status.resets;
+            taskEXIT_CRITICAL(&s_lock);
+            detect(requested, true);
+            down = false;
+            wake = xTaskGetTickCount();
+        }
         if (!s_status.found) {
-            if (!detect()) {
+            if (!detect(0, false)) {
                 ESP_LOGW(kTag, "GT911 not answering; retrying");
                 vTaskDelay(pdMS_TO_TICKS(2000));
                 wake = xTaskGetTickCount();
@@ -168,7 +298,8 @@ void touch_task(void *)
 
         int raw_x = 0;
         int raw_y = 0;
-        const Read r = read_point(raw_x, raw_y);
+        uint8_t status = 0;
+        const Read r = read_point(raw_x, raw_y, status);
         if (r == Read::Error) {
             taskENTER_CRITICAL(&s_lock);
             ++s_status.errors;
@@ -186,6 +317,12 @@ void touch_task(void *)
             errors_in_row = 0;
             taskENTER_CRITICAL(&s_lock);
             ++s_status.reads;
+            if (r != Read::NoData) {
+                ++s_status.frames;
+            }
+            if (status != 0) {
+                s_status.last_status = status;
+            }
             taskEXIT_CRITICAL(&s_lock);
         }
 
@@ -230,6 +367,19 @@ void touch_task(void *)
 
 }  // namespace
 
+const char *touch_start_name(TouchStart start)
+{
+    switch (start) {
+    case TouchStart::ResetAt5D:
+        return "reset at 0x5D";
+    case TouchStart::ResetAt14:
+        return "reset at 0x14";
+    case TouchStart::PowerCycle:
+        return "power cycle";
+    }
+    return "?";
+}
+
 esp_err_t touch_init(TapHandler on_tap)
 {
     s_on_tap = on_tap;
@@ -249,9 +399,9 @@ esp_err_t touch_init(TapHandler on_tap)
     if (err != ESP_OK) {
         return err;
     }
-    // Power up held in reset; detect() then releases it with the address set.
-    gpio_set_level(static_cast<gpio_num_t>(PIN_TOUCH_RST), 0);
-    gpio_set_level(static_cast<gpio_num_t>(PIN_TOUCH_EN), 1);
+    // Power up held in reset; the touch task then starts the controller.
+    gpio_set_level(kRst, 0);
+    gpio_set_level(kEn, 1);
     vTaskDelay(pdMS_TO_TICKS(250));
 
     i2c_master_bus_config_t bus = {};
@@ -285,4 +435,10 @@ TouchStatus touch_status()
     const TouchStatus copy = s_status;
     taskEXIT_CRITICAL(&s_lock);
     return copy;
+}
+
+void touch_try_next_start()
+{
+    const TouchStatus now = touch_status();
+    s_requested_start = (static_cast<int>(now.start) + 1) % kTouchStarts;
 }

@@ -151,29 +151,33 @@ void draw_touch_test(Canvas &c, const TouchStatus &t)
     c.text(64, 14, "TOUCH TEST", font_large(), B);
     char line[96];
     if (t.found) {
-        std::snprintf(line, sizeof(line), "Controller: GT911 at 0x%02X, %ux%u", t.address,
-                      t.sensor_w, t.sensor_h);
+        std::snprintf(line, sizeof(line), "Chip '%s' fw %04X cfg %02X at 0x%02X, %ux%u",
+                      t.product_id, t.firmware, t.config_version, t.address, t.sensor_w,
+                      t.sensor_h);
     } else {
         std::snprintf(line, sizeof(line), "Controller: not found, retrying");
     }
-    c.text(64, 82, line, font_small(), B);
-    std::snprintf(line, sizeof(line), "Reads %lu, errors %lu, resets %lu",
-                  static_cast<unsigned long>(t.reads), static_cast<unsigned long>(t.errors),
-                  static_cast<unsigned long>(t.resets));
-    c.text(64, 110, line, font_small(), B);
-    std::snprintf(line, sizeof(line), "Touches %lu, taps %lu, ignored %lu",
+    c.text(64, 78, line, font_small(), B);
+    std::snprintf(line, sizeof(line), "Start: %s%s", touch_start_name(t.start),
+                  t.found && !t.healthy ? " (looks unconfigured)" : "");
+    c.text(64, 104, line, font_small(), B);
+    std::snprintf(line, sizeof(line), "Reads %lu, with data %lu, errors %lu, status %02X",
+                  static_cast<unsigned long>(t.reads), static_cast<unsigned long>(t.frames),
+                  static_cast<unsigned long>(t.errors), t.last_status);
+    c.text(64, 130, line, font_small(), B);
+    std::snprintf(line, sizeof(line), "Touches %lu, taps %lu, ignored %lu, restarts %lu",
                   static_cast<unsigned long>(t.touches), static_cast<unsigned long>(t.taps),
-                  static_cast<unsigned long>(t.ignored));
-    c.text(64, 138, line, font_small(), B);
+                  static_cast<unsigned long>(t.ignored), static_cast<unsigned long>(t.resets));
+    c.text(64, 156, line, font_small(), B);
     if (t.touches > 0) {
         std::snprintf(line, sizeof(line), "Last: raw %d,%d  screen %d,%d", t.raw_x, t.raw_y, t.x,
                       t.y);
     } else {
         std::snprintf(line, sizeof(line), "Last: no touch yet");
     }
-    c.text(64, 166, line, font_small(), B);
-    c.text(64, 206, "Tap each square. The cross should land on it.", font_small(), B);
-    c.text(64, 234, "Press DOWN to return to the game.", font_small(), B);
+    c.text(64, 182, line, font_small(), B);
+    c.text(64, 218, "Tap each square. The cross should land on it.", font_small(), B);
+    c.text(64, 244, "UP: restart touch another way. DOWN: back to the game.", font_small(), B);
 
     const Rect targets[] = {
         {0, 0, 44, 44}, {756, 0, 44, 44}, {0, 436, 44, 44}, {756, 436, 44, 44}, {378, 310, 44, 44},
@@ -254,6 +258,8 @@ extern "C" void app_main()
                         if (!touch_test) {
                             game->redraw_all();
                         }
+                    } else if (touch_test && e.button == Button::Up && !e.long_press) {
+                        touch_try_next_start();
                     } else {
                         game->button(e.button, e.long_press, now);
                     }

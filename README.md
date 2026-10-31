@@ -89,7 +89,7 @@ page to GitHub Pages on every push to `main`. To turn on publishing, set
 
 ## Status
 
-Version 1.0.1 builds cleanly and passes the host simulation. It has not yet
+Version 1.0.2 builds cleanly and passes the host simulation. It has not yet
 been tested on real hardware. If something misbehaves, the serial log
 (`idf.py monitor`, 115200 baud) shows each tap, button press, game phase change
 and display refresh, plus touch, radio and display start-up errors.
