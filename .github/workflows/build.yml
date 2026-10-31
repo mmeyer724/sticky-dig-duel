@@ -1,0 +1,80 @@
+name: Build firmware and flasher
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host tests (rules, link protocol, simulated games)
+        run: make -C test
+
+      - name: Build firmware with ESP-IDF v5.4.2
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.4.2
+          target: esp32s3
+          command: idf.py build && idf.py merge-bin -o dig-duel-merged.bin
+
+      - name: Assemble flasher site
+        run: |
+          version="$(sed -n 's/^set(PROJECT_VER "\(.*\)")$/\1/p' CMakeLists.txt)+${GITHUB_SHA::7}"
+          mkdir -p site
+          cp web/index.html docs/*.png site/
+          cp build/dig-duel-merged.bin site/dig-duel.bin
+          cat > site/manifest.json <<EOF
+          {
+            "name": "Dig Duel",
+            "version": "${version}",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32-S3",
+                "parts": [{ "path": "dig-duel.bin", "offset": 0 }]
+              }
+            ]
+          }
+          EOF
+          cat site/manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dig-duel-firmware
+          path: |
+            build/dig-duel-merged.bin
+            build/dig_duel.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/flash_args
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

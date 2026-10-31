@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dig Duel Flasher</title>
+  <meta name="description" content="Install Dig Duel, a two-player fossil-hunting game, on a Seeed reTerminal Sticky from your browser.">
+  <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+  <style>
+    :root {
+      --bg: #f6f5f1;
+      --surface: #ffffff;
+      --text: #161616;
+      --muted: #5c5c5c;
+      --line: #dcdad3;
+      --accent: #161616;
+      --accent-text: #ffffff;
+      --warn-bg: #fff4d6;
+      --warn-line: #e9c96b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #151515;
+        --surface: #1f1f1f;
+        --text: #f1f1ee;
+        --muted: #a7a7a2;
+        --line: #353535;
+        --accent: #f1f1ee;
+        --accent-text: #151515;
+        --warn-bg: #3a3118;
+        --warn-line: #7a6427;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #151515;
+      --surface: #1f1f1f;
+      --text: #f1f1ee;
+      --muted: #a7a7a2;
+      --line: #353535;
+      --accent: #f1f1ee;
+      --accent-text: #151515;
+      --warn-bg: #3a3118;
+      --warn-line: #7a6427;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { max-width: 860px; margin: 0 auto; padding: 40px 16px 64px; }
+    h1 { font-size: 2.4rem; line-height: 1.1; margin: 0 0 8px; letter-spacing: -0.02em; }
+    h2 { font-size: 1.25rem; margin: 40px 0 12px; }
+    p { margin: 0 0 12px; }
+    .lede { color: var(--muted); font-size: 1.1rem; margin-bottom: 28px; }
+    .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 0 0 32px; }
+    .shots img {
+      width: 100%; height: auto; display: block;
+      border: 1px solid var(--line); border-radius: 10px; background: #fff;
+    }
+    .card {
+      background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+      padding: 24px;
+    }
+    ol { margin: 0 0 20px; padding-left: 1.3em; }
+    li { margin-bottom: 8px; }
+    .install { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .install button {
+      font: inherit; font-weight: 650; font-size: 1.05rem;
+      background: var(--accent); color: var(--accent-text);
+      border: 0; border-radius: 10px; padding: 14px 26px; cursor: pointer;
+    }
+    .version { color: var(--muted); font-size: 0.9rem; }
+    .note {
+      background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 10px;
+      padding: 12px 16px; margin-top: 8px;
+    }
+    code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em; }
+    a { color: inherit; }
+    footer { color: var(--muted); font-size: 0.9rem; margin-top: 48px; }
+    @media (max-width: 600px) {
+      h1 { font-size: 1.9rem; }
+      .shots { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Dig Duel</h1>
+  <p class="lede">A two-player fossil hunt for the Seeed reTerminal Sticky. Two Stickies find each other over ESP&#8209;NOW and play directly, with no Wi-Fi network or app.</p>
+
+  <div class="shots">
+    <img src="lobby.png" width="800" height="480" alt="Lobby screen: Dig Duel title, rules and a panel saying another Sticky was found">
+    <img src="play.png" width="800" height="480" alt="Play screen: the opponent's 7 by 7 dig site with found bones and a radar ping, your own site in miniature">
+  </div>
+
+  <section class="card">
+    <h2 style="margin-top:0">Install</h2>
+    <ol>
+      <li>Connect a Sticky to this computer with a USB-C data cable and switch it on.</li>
+      <li>Click <strong>Install Dig Duel</strong> and choose the Sticky's serial port. It usually shows up as <code>USB Single Serial</code> or a CH343 device.</li>
+      <li>Wait for the install to finish, then unplug it and repeat with the second Sticky.</li>
+    </ol>
+    <div class="install">
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate">Install Dig Duel</button>
+        <span slot="unsupported">Your browser can't flash devices. Use Chrome or Edge on a desktop computer.</span>
+        <span slot="not-allowed">Open this page over HTTPS to flash.</span>
+      </esp-web-install-button>
+      <span class="version" id="version"></span>
+    </div>
+    <p class="note">Installing replaces the Sticky's current firmware, including Seeed's note app. You can put Seeed's firmware back later from <a href="https://www.seeedstudio.com/sticky/playground/firmware/">Seeed's Sticky firmware page</a>.</p>
+  </section>
+
+  <h2>How to play</h2>
+  <ol>
+    <li>Switch both Stickies on near each other. They pair automatically.</li>
+    <li><strong>Bury.</strong> Your four fossils (skull, femur, claw, tooth) start in random spots. Tap one to pick it up, then tap a square to move it. Tap it again or press <strong>ROTATE</strong> to turn it, or press <strong>SHUFFLE</strong> for a new random layout. Press <strong>I'M READY</strong> when you're done.</li>
+    <li><strong>Dig.</strong> On your turn, tap a square of the other player's site, then press <strong>DIG</strong>. Find a bone and you dig again.</li>
+    <li><strong>Radar.</strong> Twice per game you can press <strong>RADAR</strong> instead: it counts the bones in the 3&times;3 area around the square you picked, and uses up your turn.</li>
+    <li>The first player to unearth all 12 bones wins. Each Sticky then reveals its map, and the other one checks it against the answers it was given during the game.</li>
+  </ol>
+  <p>Press the AI button once to redraw the screen and clear e-paper ghosting. Hold it for 2 seconds to put the Sticky to sleep; press it again to wake up. A Sticky also falls asleep by itself after 15 minutes without play.</p>
+
+  <footer>
+    Source code and build instructions: <a href="https://github.com/mmeyer724/sticky-dig-duel">github.com/mmeyer724/sticky-dig-duel</a>.
+    Flashing uses <a href="https://esphome.github.io/esp-web-tools/">ESP Web Tools</a>.
+  </footer>
+</main>
+<script>
+  fetch("manifest.json")
+    .then((r) => r.json())
+    .then((m) => { document.getElementById("version").textContent = "Version " + m.version; })
+    .catch(() => {});
+</script>
+</body>
+</html>
